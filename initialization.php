@@ -2,7 +2,7 @@
 /*
 Plugin Name: Jewish Professional Network Miami - Custom Tools
 Description: Event management, WhatsApp notifications, and host tools for JPN Miami.
-Version: 1.1.0
+Version: 1.2.0
 Author: Michael Peres
 Plugin URI: https://github.com/mikeyperes/jpn-structure
 Author URI: https://michaelperes.com
@@ -15,6 +15,7 @@ include_once("generic-functions.php");
 include_once("dashboard-main.php");
 include_once("feature-author-type-fill.php");
 include_once("shortcodes.php");
+include_once("acf-fields.php");
 include_once("dashoboard-modifications.php");
 
 
