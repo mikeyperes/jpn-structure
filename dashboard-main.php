@@ -120,8 +120,16 @@ add_action( 'admin_footer-post.php', __NAMESPACE__ . '\\add_featured_image_url_t
 
 // REMOVE USER.PHP ANNOYING FEATURES
 function hide_custom_user_profile_sections() {
+    if (!function_exists('get_current_screen')) {
+        return;
+    }
+
     // Only target profile pages
     $screen = get_current_screen();
+    if (!$screen) {
+        return;
+    }
+
     if ( 'profile' !== $screen->base && 'user-edit' !== $screen->base ) {
         return;
     }

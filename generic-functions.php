@@ -1,11 +1,134 @@
-<?php namespace jpn_structure; 
+<?php namespace jpn_structure;
 
 // Use 'acf/save_post' and drop the extra parameters (just $post_id).
 add_action('acf/save_post', __NAMESPACE__ . '\\update_event_timestamps', 10);
 add_action('save_post', __NAMESPACE__ . '\\set_default_event_featured_image', 10, 3);
+add_action('admin_footer-post.php', __NAMESPACE__ . '\\lock_derived_event_fields_script');
+add_action('admin_footer-post-new.php', __NAMESPACE__ . '\\lock_derived_event_fields_script');
+add_filter('acf/prepare_field/name=start_date_timestamp', __NAMESPACE__ . '\\lock_derived_event_field');
+add_filter('acf/prepare_field/name=end_date_timestamp', __NAMESPACE__ . '\\lock_derived_event_field');
+add_filter('acf/prepare_field/name=start_date_display', __NAMESPACE__ . '\\lock_derived_event_field');
+add_filter('acf/prepare_field/name=end_date_display', __NAMESPACE__ . '\\lock_derived_event_field');
 
+function is_event_post_edit_screen() {
+    if (!is_admin() || !function_exists('get_current_screen')) {
+        return false;
+    }
+
+    $screen = get_current_screen();
+
+    return $screen && $screen->post_type === 'event';
+}
+
+function lock_derived_event_field($field) {
+    if (!is_event_post_edit_screen()) {
+        return $field;
+    }
+
+    $field['wrapper'] = is_array($field['wrapper'] ?? null) ? $field['wrapper'] : [];
+    $field['readonly'] = 1;
+    $field['instructions'] = trim(
+        trim((string) ($field['instructions'] ?? '')) . ' Auto-generated from the event date fields.'
+    );
+    $field['wrapper']['class'] = trim(
+        trim((string) ($field['wrapper']['class'] ?? '')) . ' jpn-derived-event-field'
+    );
+
+    return $field;
+}
+
+function lock_derived_event_fields_script() {
+    if (!is_event_post_edit_screen()) {
+        return;
+    }
+    ?>
+    <script type="text/javascript">
+    jQuery(function($) {
+        var names = [
+            'start_date_timestamp',
+            'end_date_timestamp',
+            'start_date_display',
+            'end_date_display'
+        ];
+
+        names.forEach(function(name) {
+            var $field = $('.acf-field[data-name="' + name + '"]');
+            if (!$field.length) {
+                return;
+            }
+
+            $field.find('input, textarea, select').prop('readonly', true).prop('disabled', true);
+            $field.addClass('jpn-derived-event-field');
+
+            if (!$field.find('.jpn-derived-event-field-note').length) {
+                $field.find('.acf-label').append(
+                    '<p class="description jpn-derived-event-field-note">Auto-generated from the event date fields.</p>'
+                );
+            }
+        });
+    });
+    </script>
+    <style type="text/css">
+        .jpn-derived-event-field .acf-input input,
+        .jpn-derived-event-field .acf-input textarea,
+        .jpn-derived-event-field .acf-input select {
+            background: #f6f7f7;
+            color: #50575e;
+            cursor: not-allowed;
+        }
+    </style>
+    <?php
+}
+
+function get_default_event_featured_image_id() {
+    return (int) apply_filters('jpn_structure/default_event_featured_image_id', 1354);
+}
+
+function set_or_clear_derived_event_date_fields($post_id, $source_value, $timestamp_field, $display_field) {
+    if (empty($source_value)) {
+        update_field($timestamp_field, '', $post_id);
+        update_field($display_field, '', $post_id);
+        return;
+    }
+
+    try {
+        $timezone = wp_timezone();
+        $value = trim((string) $source_value);
+        $date = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, $timezone);
+        $errors = \DateTimeImmutable::getLastErrors();
+
+        if (
+            ! $date instanceof \DateTimeImmutable ||
+            ($errors['warning_count'] ?? 0) > 0 ||
+            ($errors['error_count'] ?? 0) > 0 ||
+            $date->format('Y-m-d H:i:s') !== $value
+        ) {
+            throw new \RuntimeException('Invalid event date format.');
+        }
+    } catch (\Throwable $exception) {
+        update_field($timestamp_field, '', $post_id);
+        update_field($display_field, '', $post_id);
+        write_log('Invalid event date for post ID ' . $post_id . ': ' . $source_value, true);
+        return;
+    }
+
+    update_field($timestamp_field, $date->getTimestamp(), $post_id);
+    update_field(
+        $display_field,
+        $date->format('F j') . ' at ' . $date->format('g:iA'),
+        $post_id
+    );
+}
 
 function set_default_event_featured_image($post_id, $post, $update) {
+    if (!$post instanceof \WP_Post) {
+        $post = get_post($post_id);
+    }
+
+    if (!$post instanceof \WP_Post) {
+        return;
+    }
+
     // Only run for the "event" post type.
     if ('event' !== $post->post_type) {
         return;
@@ -21,8 +144,10 @@ function set_default_event_featured_image($post_id, $post, $update) {
     
     // If there's no featured image, set the default one.
     if (!has_post_thumbnail($post_id)) {
-        $default_image_id = 1354; // Attachment ID for "JPN Miami Dark No Text.png"
-        set_post_thumbnail($post_id, $default_image_id);
+        $default_image_id = get_default_event_featured_image_id();
+        if ($default_image_id > 0 && get_post_type($default_image_id) === 'attachment') {
+            set_post_thumbnail($post_id, $default_image_id);
+        }
     }
 }
 
@@ -95,34 +220,26 @@ if (!function_exists(__NAMESPACE__ . '\\update_event_timestamps')) {
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
             return;
         }
-        if (!current_user_can('edit_post', $post_id)) {
+        if (is_user_logged_in() && !current_user_can('edit_post', $post_id)) {
             return;
         }
     
-        // 4) Fetch ACF date fields.
-        $start_date = get_field('start_date', $post_id);
-        $end_date   = get_field('end_date', $post_id);
-    
-        // 5) If start_date exists, update its timestamp and create a friendly display.
-        if (!empty($start_date)) {
-            $start_date_timestamp = strtotime($start_date);
-            update_field('start_date_timestamp', $start_date_timestamp, $post_id);
-            
-            // Create a human-friendly version.
-            // Format: "March 23, 2025 at 10:00AM"
-            $start_display = date('F j', $start_date_timestamp) . ' at ' . date('g:iA', $start_date_timestamp);
-            update_field('start_date_display', $start_display, $post_id);
-        }
-    
-        // 6) If end_date exists, update its timestamp and create a friendly display.
-        if (!empty($end_date)) {
-            $end_date_timestamp = strtotime($end_date);
-            update_field('end_date_timestamp', $end_date_timestamp, $post_id);
-            
-            // Create a human-friendly version.
-            $end_display = date('F j', $end_date_timestamp) . ' at ' . date('g:iA', $end_date_timestamp);
-            update_field('end_date_display', $end_display, $post_id);
-        }
+        // 4) Read the raw stored values instead of ACF's formatted output.
+        $start_date = get_post_meta($post_id, 'start_date', true);
+        $end_date   = get_post_meta($post_id, 'end_date', true);
+
+        set_or_clear_derived_event_date_fields(
+            $post_id,
+            $start_date,
+            'start_date_timestamp',
+            'start_date_display'
+        );
+        set_or_clear_derived_event_date_fields(
+            $post_id,
+            $end_date,
+            'end_date_timestamp',
+            'end_date_display'
+        );
     
         // Optional logging.
         write_log("Event Timestamps Updated for post ID: $post_id", true);
